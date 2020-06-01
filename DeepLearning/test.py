@@ -2,12 +2,18 @@ import tensorflow as tf
 import numpy as np
 from models.deformableNet import DeformableNet
 from misc.notebookHelpers import ultraSoundAnimation
+from misc.plots import *
 import argparse
 import os
 import h5py
 import glob
 import pandas as pd
 import cv2
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from PIL import Image
+import datetime
+from scipy.spatial import distance
 
 tf.enable_eager_execution()
 
@@ -22,7 +28,7 @@ parser.add_argument('-s', '--smoothing',
                     type=float, default=0.,
                     help='Smoothing parameter for exp moving average filter')
 parser.add_argument('-ds', '--downsampling-layers',
-                    type=str, default='2',
+                    type=str, default='4,2,1',
                     help='Comma delimited(no spaces) list containing ' +\
                     'the number of downsampling layers for each network')
 parser.add_argument('-op', '--output-path',
@@ -30,7 +36,7 @@ parser.add_argument('-op', '--output-path',
                     help='Path to storing/loading output, ' +
                     'such as model weights, logs etc.')
 parser.add_argument('-dp', '--data-path',
-                    default='../data/_D114000',#/processed/strain_point',
+                    default='',#/processed/strain_point',
                     help='Path to dataset')
 
 args = parser.parse_args()
@@ -118,7 +124,7 @@ def trackPoints(defnets, fixed, moving, points, smoothing=0.):
     #         tp[1, 0] = np.clip(tp[1, 0], 0, fixed.shape[1])
     #         tracked_points[frame_num + 1, j, :] = tp[:2, 0]
 
-    return tracked_points, displacements
+    return tracked_points, displacements, warped_grid
 
 
 def distances(tracked_points):
@@ -167,91 +173,52 @@ for i, defnet in enumerate(defnets):
 #views = dict(zip(views.file, views.view))
 # views = dict(zip(view_and_vals.File, view_and_vals.View))
 
-h5files = glob.glob(os.path.join(args.data_path, '/*.h5'))#'*/*.h5'))
+
 left_strains = {}
 right_strains = {}
 
-for h5file in h5files:
-    with h5py.File(h5file) as data:
-        file_name = h5file.split('/')[-1][:-5]
-        patient = h5file.split('/')[-2]
-        key = patient + '/' + file_name
 
-        file_num = int(h5file.split('_')[-1][:-3])
+f_read = h5py.File('../../ShortAxis/K2RBPE8U_Bilateral.h5', 'r')
+data = np.array(f_read['tissue/data'])
+print(data.shape)
+points = np.array(f_read['tissue/trackingPoints'])
 
-        video = data['tissue/data'][:]
-        video = np.array([[[pal[int(round(video[i, j, k]))]
-                            for k in range(video.shape[2])]
-                           for j in range(video.shape[1])]
-                          for i in range(video.shape[0])])
-        video /= 255.
-        fps = 1 / (data['tissue/times'][3] - data['tissue/times'][2])
 
-        ds_labels = data['tissue/ds_labels']
-        points = data['tissue/det_track_points'][:]
-        es = np.argwhere(ds_labels[:] == 2.)[0][0]
-
-    fixed = tf.constant(video[:-1, :, :, None],
-                        dtype='float32')
-    moving = tf.constant(video[1:, :, :, None],
-                         dtype='float32')
-
-    tracked_points, displacements = trackPoints(defnets,
-                                                fixed, moving,
-                                                points,
-                                                smoothing=args.smoothing)
+video = data
+video=np.transpose(video,(2,1,0))
+video = video[:,:,:,None]
+fixed = tf.constant(video[:-1, :, :], 
+                    dtype='float32')
+moving = tf.constant(video[1:, :, :],
+                     dtype='float32')
 
 
 
-    # anim = ultraSoundAnimation(video,
-    #                            points=tracked_points, fps=fps)
-    # anim.save(os.path.join(args.output_path,
-    #                        'videos', args.experiment_id,
-    #                        file_name + f'_{file_num}' + '.mp4'))
+tracked_points, displacements, warped_grid = trackPoints(defnets,
+                                            fixed, moving,
+                                            points,
+                                            smoothing=0)
 
-    left_dist, right_dist = distances(tracked_points)
 
-    left_ed_dist = left_dist[0]
-    left_es_dist = left_dist[es]
+points=tracked_points
 
-    if (video[0, points[0, 1], points[0, 0]] == 0. or
-            video[0, points[2, 1], points[2, 0]] == 0.):
-        left_strain = np.nan
-    else:
-        left_strain = 100 * np.abs((left_es_dist - left_ed_dist) /
-                                   left_ed_dist)
+left_distances = []
+right_distances = []
+for n in range(fixed.shape[0]):
+    euclideandistanceleft = distance.euclidean(points[n,0,:], points[n,2,:])
+    left_distances = np.append(left_distances,euclideandistanceleft)
+    euclideandistanceright = distance.euclidean(points[n,1,:], points[n,3,:])
+    right_distances = np.append(right_distances,euclideandistanceright)
 
-    right_ed_dist = right_dist[0]
-    right_es_dist = right_dist[es]
 
-    if (video[0, points[1, 1], points[1, 0]] == 0. or
-            video[0, points[3, 1], points[3, 0]] == 0.):
-        right_strain = np.nan
-    else:
-        right_strain = 100 * np.abs((right_es_dist - right_ed_dist) /
-                                    right_ed_dist)
-    print(f'Left strain: {left_strain}, Right strain: {right_strain}')
+#Calculating Lagrangian strain
+print("Left strain in" +str(filenames[i])
+print((min(left_distances) - left_distances[0]) / left_distances[0])
+print("Right strain in "+str(filenames[i])
+print((min(right_distances) - right_distances[0]) / right_distances[0])
 
-    if key in left_strains:
-        left_strains[key].append(left_strain)
-    else:
-        left_strains[key] = [left_strain]
+video2=np.squeeze(video, axis=3)
 
-    if key in right_strains:
-        right_strains[key].append(right_strain)
-    else:
-        right_strains[key] = [right_strain]
+anim = ultraSoundAnimation(video2,points=tracked_points)
 
-vals = []
-for key in left_strains.keys():
-    # file_info = views[views['file'] == key]
-    # ground_truth_left = file_info['Left strain'].values[0]
-    # ground_truth_right = file_info['Right strain'].values[0]
-    view = views[key]
-    for i, [left_strain, right_strain] in enumerate(zip(left_strains[key], right_strains[key])):
-        vals.append([key, i + 1, view, left_strain, right_strain])
-
-results = pd.DataFrame(vals,
-                       columns=['file', 'cycle', 'view', 'left_strain', 'right_strain'])
-results.to_csv(os.path.join(args.output_path,
-                            'results', args.experiment_id, 'strain_ests.csv'))
+#anim.save('../../ShortAxis/K2RBPKP0_Bilateral.mp4')

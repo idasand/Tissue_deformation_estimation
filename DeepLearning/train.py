@@ -191,8 +191,3 @@ for i, defnet in enumerate(defnets):
                       f' "value": {mean_cross_corr}, ' +
                       f'"step": {global_step.numpy()}}}')
 
-
-'''fig, ax = plt.subplots()
-plotGrid(ax, warped_grid[0, :, :, :], color='purple')
-ax.set_title('Warp Grid')
-ax.figure.savefig('testplotwarped.png')'''
